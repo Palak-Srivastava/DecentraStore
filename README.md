@@ -234,7 +234,7 @@ If you use this work in academic research, please cite:
 @article{decentrastore2026,
   title   = {DecentraStore: A Blockchain-Governed Decentralized Storage System
              with Reed-Solomon Fault Tolerance and Multi-Layer Encryption},
-  author  = {[Author Name]},
+  author  = {Palak Srivastava},
   journal = {IEEE Access},
   year    = {2026}
 }
