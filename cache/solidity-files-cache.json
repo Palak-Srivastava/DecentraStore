@@ -1,0 +1,149 @@
+{
+  "_format": "hh-sol-cache-2",
+  "files": {
+    "C:\\Users\\982651\\OneDrive - American Airlines, Inc\\Documents\\Decentralized disk space renting system using blockchain\\decentrastore\\contracts\\FileRegistry.sol": {
+      "lastModificationDate": 1777943075307,
+      "contentHash": "83f5f9773e253321726da0ee5897a768",
+      "sourceName": "contracts/FileRegistry.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "FileRegistry"
+      ]
+    },
+    "C:\\Users\\982651\\OneDrive - American Airlines, Inc\\Documents\\Decentralized disk space renting system using blockchain\\decentrastore\\contracts\\HeartbeatMonitor.sol": {
+      "lastModificationDate": 1777942785402,
+      "contentHash": "1fa34be0ada31425c2710b9ebb527907",
+      "sourceName": "contracts/HeartbeatMonitor.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "HeartbeatMonitor"
+      ]
+    },
+    "C:\\Users\\982651\\OneDrive - American Airlines, Inc\\Documents\\Decentralized disk space renting system using blockchain\\decentrastore\\contracts\\HostRegistry.sol": {
+      "lastModificationDate": 1777942748716,
+      "contentHash": "118cf89c2729717503427f568f00bbf1",
+      "sourceName": "contracts/HostRegistry.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "HostRegistry"
+      ]
+    },
+    "C:\\Users\\982651\\OneDrive - American Airlines, Inc\\Documents\\Decentralized disk space renting system using blockchain\\decentrastore\\contracts\\PaymentLedger.sol": {
+      "lastModificationDate": 1777942823567,
+      "contentHash": "4afe9184ed37f0a21c72b605aa453293",
+      "sourceName": "contracts/PaymentLedger.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "PaymentLedger"
+      ]
+    }
+  }
+}
