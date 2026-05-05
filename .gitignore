@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+server/node_modules/
+
+# Hardhat build outputs
+artifacts/
+cache/
+typechain/
+typechain-types/
+
+# Hardhat local deployment state
+deployments/localhost/
+deployed-addresses.json
+
+# Environment variables (NEVER commit private keys)
+.env
+.env.local
+.env.*.local
+
+# Frontend build output
+frontend/dist/
+frontend/.vite/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# Prevent OneDrive from indexing secrets (rename trick)
+server/.env
+frontend/.env
+
+# Sepolia deploy results (may contain sensitive data)
+sepolia-deploy-results.json
+
+# Zip archives
+*.zip

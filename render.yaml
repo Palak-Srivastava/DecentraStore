@@ -1,0 +1,31 @@
+# Render.com deployment config for DecentraStore payment server
+# Free tier — always on (no sleep on paid plan, sleeps after 15min on free)
+# Deploy: connect GitHub repo → select "server" as root dir → this file auto-detected
+
+services:
+  - type: web
+    name: decentrastore-server
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: RAZORPAY_KEY_ID
+        sync: false          # set manually in Render dashboard
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: DEPLOYER_PRIVATE_KEY
+        sync: false
+      - key: PAYMENT_LEDGER_ADDRESS
+        sync: false
+      - key: SEPOLIA_RPC_URL
+        sync: false
+      - key: RPC_URL
+        fromDatabase:
+          name: decentrastore-server
+          property: connectionString
+    healthCheckPath: /api/health

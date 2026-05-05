@@ -1,0 +1,115 @@
+{
+  "timestamp": "2026-05-05T02:20:42.518Z",
+  "fileSizeBytes": 1048576,
+  "rsConfig": {
+    "data": 10,
+    "parity": 4,
+    "total": 14
+  },
+  "totalGasUsed": 7419467,
+  "totalTimeMs": 1120,
+  "operations": [
+    {
+      "lbl": "Deploy HostRegistry",
+      "gas": "1318121",
+      "ms": 171,
+      "extra": ""
+    },
+    {
+      "lbl": "Deploy FileRegistry",
+      "gas": "1447423",
+      "ms": 152,
+      "extra": ""
+    },
+    {
+      "lbl": "Deploy HeartbeatMonitor",
+      "gas": "883250",
+      "ms": 149,
+      "extra": ""
+    },
+    {
+      "lbl": "Deploy PaymentLedger",
+      "gas": "1264723",
+      "ms": 132,
+      "extra": ""
+    },
+    {
+      "lbl": "registerHost",
+      "gas": "318597",
+      "ms": 132,
+      "extra": ""
+    },
+    {
+      "lbl": "registerHost",
+      "gas": "284397",
+      "ms": 117,
+      "extra": ""
+    },
+    {
+      "lbl": "registerHost",
+      "gas": "284385",
+      "ms": 99,
+      "extra": ""
+    },
+    {
+      "lbl": "AES-256-GCM Encrypt (1MB)",
+      "gas": "N/A",
+      "ms": 1,
+      "extra": "1048576→1048592 bytes"
+    },
+    {
+      "lbl": "RS(10,4) Encode (1MB)",
+      "gas": "N/A",
+      "ms": 11,
+      "extra": "14 shards"
+    },
+    {
+      "lbl": "uploadFileMap (14 shards)",
+      "gas": "981177",
+      "ms": 146,
+      "extra": ""
+    },
+    {
+      "lbl": "RS(10,4) Decode (4 missing)",
+      "gas": "N/A",
+      "ms": 9,
+      "extra": "4 shards reconstructed"
+    },
+    {
+      "lbl": "AES-256-GCM Decrypt (1MB)",
+      "gas": "N/A",
+      "ms": 1,
+      "extra": ""
+    },
+    {
+      "lbl": "startMonitoring",
+      "gas": "163805",
+      "ms": 0,
+      "extra": ""
+    },
+    {
+      "lbl": "submitHeartbeat",
+      "gas": "79548",
+      "ms": 0,
+      "extra": ""
+    },
+    {
+      "lbl": "payment.registerHost",
+      "gas": "139510",
+      "ms": 0,
+      "extra": ""
+    },
+    {
+      "lbl": "addCredit",
+      "gas": "139292",
+      "ms": 0,
+      "extra": ""
+    },
+    {
+      "lbl": "chargeStorageUsage",
+      "gas": "115239",
+      "ms": 0,
+      "extra": ""
+    }
+  ]
+}
