@@ -40,14 +40,23 @@ contract PaymentLedger {
     // ─────────────────────────────────────────────
 
     address public owner;
+    address public platformWallet;   // Where the $2/GB/month platform profit accumulates
+
+    // ── Pricing constants (in USD cents / GB / month) ──────────────────────
+    uint256 public constant RENTER_RATE_CENTS  = 1400;  // $14.00 renter pays per GB per month
+    uint256 public constant HOST_RATE_CENTS    = 1200;  // $12.00 host earns per GB per month
+    uint256 public constant PLATFORM_RATE_CENTS =  200; // $2.00  platform profit per GB per month
 
     uint256 public settlementThreshold = 10000; // Minimum accrued amount before payout (in paise = ₹100)
-    uint256 public platformFeePercent  = 5;      // Platform takes 5% of each payment
     uint256 public totalPaymentsCount;           // Total payment records
 
     mapping(address => HostEarnings)   public hostEarnings;     // host wallet → earnings
     mapping(address => RenterAccount)  public renterAccounts;   // renter wallet → credit account
     mapping(uint256  => PaymentRecord) public paymentRecords;   // payment ID → record
+
+    // Platform-level earnings accumulator (for admin dashboard)
+    uint256 public totalPlatformEarnings;   // All-time platform profit
+    uint256 public pendingPlatformEarnings; // Undrawn platform profit
 
     address[] public registeredHosts;
     address[] public registeredRenters;
@@ -59,6 +68,7 @@ contract PaymentLedger {
     event CreditAdded(address indexed renter, uint256 amount);
     event StorageCharged(address indexed renter, address indexed host, uint256 amount, bytes32 fileId);
     event EarningsAccrued(address indexed host, uint256 amount, uint256 newTotal);
+    event PlatformEarned(uint256 amount, uint256 newPendingTotal);
     event PaymentDue(address indexed host, uint256 amount, uint256 paymentId);
     event PaymentSettled(uint256 indexed paymentId, address indexed host, string transactionRef);
     event RenterLowBalance(address indexed renter, uint256 remainingBalance);
@@ -78,6 +88,7 @@ contract PaymentLedger {
 
     constructor() {
         owner = msg.sender;
+        platformWallet = msg.sender; // Default platform wallet = deployer; update via setPlatformWallet()
     }
 
     // ─────────────────────────────────────────────
@@ -102,11 +113,12 @@ contract PaymentLedger {
         emit CreditAdded(_renter, _amount);
     }
 
-    /// @notice Charge a renter for storage used and accrue earnings to the host
-    /// @dev Called daily by the platform for each active file storage relationship
+    /// @notice Charge a renter for storage used and split earnings: $12 to host, $2 to platform
+    /// @dev Called per-file per billing period by the platform backend.
+    ///      _amount MUST equal storedGB * RENTER_RATE_CENTS * months (validated off-chain).
     /// @param _renter  The wallet address of the renter being charged
     /// @param _host    The wallet address of the host earning rent
-    /// @param _amount  Amount to charge/earn (in smallest currency unit)
+    /// @param _amount  Total charge to the renter (in USD cents)
     /// @param _fileId  The file ID this charge relates to
     function chargeStorageUsage(
         address _renter,
@@ -119,18 +131,24 @@ contract PaymentLedger {
         require(renter.creditBalance >= _amount, "Insufficient renter credit");
 
         // Deduct from renter's credit
-        renter.creditBalance -= _amount;
-        renter.totalSpent    += _amount;
-        renter.lastBillingTime = block.timestamp;
+        renter.creditBalance   -= _amount;
+        renter.totalSpent      += _amount;
+        renter.lastBillingTime  = block.timestamp;
 
-        // Calculate platform fee
-        uint256 platformFee    = (_amount * platformFeePercent) / 100;
-        uint256 hostEarning    = _amount - platformFee;
+        // 3-way split: host gets 12/14 of the charge, platform gets 2/14
+        // Using exact constants to avoid floating-point: host = amount * 1200/1400
+        uint256 hostEarning    = (_amount * HOST_RATE_CENTS)     / RENTER_RATE_CENTS;
+        uint256 platformEarning = _amount - hostEarning;          // remainder goes to platform
 
-        // Accrue earnings to host
+        // Accrue host earnings
         _accrueHostEarnings(_host, hostEarning);
 
-        // Warn if renter balance is low (< ₹50 = 5000 paise)
+        // Accrue platform earnings
+        totalPlatformEarnings   += platformEarning;
+        pendingPlatformEarnings += platformEarning;
+        emit PlatformEarned(platformEarning, pendingPlatformEarnings);
+
+        // Warn if renter balance is low (< $50 = 5000 cents)
         if (renter.creditBalance < 5000) {
             emit RenterLowBalance(_renter, renter.creditBalance);
         }
@@ -244,5 +262,21 @@ contract PaymentLedger {
     /// @notice Get all registered host addresses
     function getAllHosts() external view returns (address[] memory) {
         return registeredHosts;
+    }
+
+    /// @notice Get all registered renter addresses (for admin dashboard)
+    function getAllRenters() external view returns (address[] memory) {
+        return registeredRenters;
+    }
+
+    /// @notice Update the platform wallet address
+    function setPlatformWallet(address _newWallet) external onlyOwner {
+        require(_newWallet != address(0), "Invalid wallet");
+        platformWallet = _newWallet;
+    }
+
+    /// @notice Mark pending platform earnings as drawn (record-keeping only; actual transfer off-chain)
+    function withdrawPlatformEarnings() external onlyOwner {
+        pendingPlatformEarnings = 0;
     }
 }

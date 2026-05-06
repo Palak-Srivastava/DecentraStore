@@ -98,6 +98,27 @@ async function main() {
     console.log(`     ${name.padEnd(20)} ${c.etherscan}`)
   );
   console.log("\n  ✅ Phase 7 complete!\n");
+
+  // ── Patch IEEE paper LaTeX macros ────────────────────────────────────────
+  const paperPath = "./docs/IEEE_Paper_DecentraStore.tex";
+  if (fs.existsSync(paperPath)) {
+    let tex = fs.readFileSync(paperPath, "utf8");
+    const patch = {
+      SepoliaHostRegistry:     results.contracts.HostRegistry.address,
+      SepoliaFileRegistry:     results.contracts.FileRegistry.address,
+      SepoliaHeartbeatMonitor: results.contracts.HeartbeatMonitor.address,
+      SepoliaPaymentLedger:    results.contracts.PaymentLedger.address,
+    };
+    for (const [macro, value] of Object.entries(patch)) {
+      tex = tex.replace(
+        new RegExp(`\\\\newcommand\\{\\\\${macro}\\}\\{[^}]*\\}`),
+        `\\newcommand{\\${macro}}{${value}}`
+      );
+    }
+    fs.writeFileSync(paperPath, tex, "utf8");
+    console.log("  📝 IEEE paper macros updated with Sepolia addresses.");
+    console.log("     Table 5 in the paper now shows live contract addresses.\n");
+  }
 }
 
 main().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });

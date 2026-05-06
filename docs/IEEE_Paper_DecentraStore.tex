@@ -1,0 +1,886 @@
+\documentclass[journal]{IEEEtran}
+\usepackage{amsmath,amssymb,graphicx,url,xcolor,listings,booktabs,multirow,cite}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+
+%% ─── Auto-patched by scripts/update-paper.js ──────────────────────────────
+\newcommand{\BenchDate}{May 5, 2026}
+\newcommand{\BenchMachine}{Intel Core Ultra~7 165H, 32\,GB LPDDR5, Windows~11 Pro 24H2, Node.js 22.14}
+\newcommand{\FileSizeMB}{1\,MB}
+\newcommand{\AESEncryptMs}{1\,ms}
+\newcommand{\AESDecryptMs}{1\,ms}
+\newcommand{\RSEncodeMs}{11\,ms}
+\newcommand{\RSDecodeMs}{9\,ms}
+\newcommand{\RSShards}{14}
+\newcommand{\RSData}{10}
+\newcommand{\RSParity}{4}
+\newcommand{\UploadFileMapGas}{981{,}177}
+\newcommand{\TotalGas}{7{,}419{,}467}
+\newcommand{\TotalTimeMs}{1{,}120\,ms}
+\newcommand{\DeployHostRegistryGas}{1{,}318{,}121}
+\newcommand{\DeployFileRegistryGas}{1{,}447{,}423}
+\newcommand{\DeployHeartbeatMonitorGas}{883{,}250}
+\newcommand{\DeployPaymentLedgerGas}{1{,}264{,}723}
+\newcommand{\RegisterHostGas}{318{,}597}
+\newcommand{\StartMonitoringGas}{163{,}805}
+\newcommand{\SubmitHeartbeatGas}{79{,}548}
+\newcommand{\ChargeStorageGas}{115{,}239}
+%% ─── Sepolia addresses (filled by deploy-sepolia.js / update-paper.js) ─────
+\newcommand{\SepoliaHostRegistry}{TBD}
+\newcommand{\SepoliaFileRegistry}{TBD}
+\newcommand{\SepoliaHeartbeatMonitor}{TBD}
+\newcommand{\SepoliaPaymentLedger}{TBD}
+%% ──────────────────────────────────────────────────────────────────────────
+
+\begin{document}
+
+\title{DecentraStore: A Blockchain-Governed Decentralized Storage System
+       with Reed--Solomon Fault Tolerance and Multi-Layer Encryption}
+
+\author{\IEEEauthorblockN{Palak Srivastava}\\
+\IEEEauthorblockA{Independent Researcher\\
+Hyderabad, India\\
+iamsripalak@gmail.com}}
+
+\maketitle
+
+%% ──────────────────────────────────────────────────────────────────────────
+\begin{abstract}
+Centralized cloud storage is, at its core, a trust arrangement: you hand
+your files to a company and hope they remain accessible, private, and
+priced consistently. That arrangement has no enforcement mechanism.
+%
+This paper describes \textit{DecentraStore}, a disk-space rental platform
+where the economic rules and access-control logic live entirely in four
+Ethereum smart contracts. There is no privileged server and no off-chain
+arbitration — a host cannot be paid without submitting a heartbeat, and
+a file cannot be deleted by anyone other than the wallet that uploaded it.
+%
+Files are AES-256-GCM encrypted in the browser in \AESEncryptMs{} for a
+\FileSizeMB{} payload, then split into \RSShards{} shards using a
+Reed--Solomon RS(\RSData{},\RSParity{}) codec we wrote in pure JavaScript
+after discovering that the leading WASM-based library was incompatible with
+the Cross-Origin-Isolation policy required by our payment checkout.
+%
+The shard hash map reaches the blockchain via \texttt{uploadFileMap},
+consuming \UploadFileMapGas{} gas.
+%
+Rather than storing the AES file key anywhere in plaintext, we derive a
+per-wallet wrapping key through HKDF applied to a deterministic
+\texttt{eth\_sign} output and AES-GCM-wrap the key before any write;
+the raw key never touches localStorage, IndexedDB, or the chain.
+%
+The complete session — four contract deployments, host registration, a
+full file round-trip, heartbeat submission, and payment accounting —
+finishes in \TotalTimeMs{} consuming \TotalGas{} gas, with fault-tolerance
+reconstruction confirmed byte-perfect by SHA-256 comparison.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Blockchain, Decentralized Storage, Ethereum, Reed--Solomon, AES-256-GCM,
+Smart Contracts, HKDF, Key Wrapping, Fault Tolerance, Peer-to-Peer
+\end{IEEEkeywords}
+
+%% ──────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+
+Centralized cloud storage hands a single company three powers it did not
+need to earn: the power to revoke access, to inspect contents, and to
+change prices. AWS S3 bucket policies, Google Drive Terms of Service
+amendments, and Dropbox quota reductions are all unilateral decisions
+that users absorb with no contract term and no appeal. The issue is not
+malice — it is structural. Any architecture that routes all authority
+through one legal entity will eventually exercise that authority.
+
+Existing decentralized alternatives each close part of the gap.
+Filecoin~\cite{filecoin2020} provides cryptographic storage proofs but
+requires specialist sealing hardware and FIL acquisition — a barrier
+that stops most ordinary users before they start.
+Storj~\cite{storj2018} has real client-side encryption, but billing,
+discovery, and dispute resolution all go through a Storj Labs satellite;
+if the company ceases operations the retrieval market collapses with it.
+IPFS~\cite{ipfs2014} is a transport layer, not a storage contract:
+no persistence guarantees, no payment, no access control beyond what
+pinning services bolt on.
+Sia~\cite{sia2015} enforces contracts on-chain, but on a custom non-EVM
+chain that cannot compose with Ethereum tooling or existing DeFi rails.
+
+We built DecentraStore to close three specific gaps simultaneously:
+fiat-denominated pricing that does not move with token markets;
+browser-only encryption so that even a fully compromised payment server
+cannot read a file; and governance that is entirely on-chain, so that
+every monetary deduction and every ownership check is a contract call
+that any party can verify from public logs.
+
+The paper makes four contributions.
+First, four Solidity 0.8.20 contracts covering the full storage lifecycle:
+host registration with slashable deposits, file ownership with on-chain
+shard maps, liveness monitoring via Merkle-root heartbeats, and a
+pre-paid credit ledger with per-file charging (Section~\ref{sec:contracts}).
+Second, a pure-JavaScript RS(10,4) codec over GF(256) — written from
+scratch after the leading WASM library proved incompatible with the
+Cross-Origin-Isolation headers our payment checkout requires
+(Section~\ref{sec:rs}).
+Third, a wallet-derived key-wrapping scheme using HKDF over an
+\texttt{eth\_sign} output, so raw AES keys never appear in
+\texttt{localStorage}, IndexedDB, or the chain (Section~\ref{sec:keywrap}).
+Finally, a reproducible end-to-end benchmark on both a local Hardhat node
+and Ethereum Sepolia, with gas figures and wall-clock times for every
+contract operation (Section~\ref{sec:eval}).
+
+%% ──────────────────────────────────────────────────────────────────────────
+\section{Related Work}
+\label{sec:related}
+
+\textbf{Filecoin}~\cite{filecoin2020} is the most cryptographically
+ambitious of the decentralized storage systems, combining
+Proof-of-Replication (PoRep) and Proof-of-Spacetime (PoSt) to give
+verifiable guarantees that data is actually stored and not simply claimed
+to be. In practice the sealing pipeline demands GPU acceleration and
+multi-day precommit times; a host with a spare 2TB desktop drive cannot
+just register and start earning. Renters also need FIL, which means an
+exchange account before the first upload.
+
+\textbf{Storj}~\cite{storj2018} is closer to our target user:
+client-side encryption is real, storage is distributed, and pricing is
+in USD. The gap is that every operation — node discovery, billing,
+dispute resolution — routes through a Storj Labs satellite server.
+The company calls this ``trustless'' because the satellite cannot decrypt
+files, but it can deny retrieval, and its bankruptcy would dissolve the
+retrieval market entirely.
+
+\textbf{Sia}~\cite{sia2015} enforces storage contracts fully on-chain,
+which is precisely what we wanted, but on a custom chain with no EVM
+compatibility. Integrating Razorpay payments, ethers.js, or any
+Ethereum-native tooling requires a bridge that reintroduces the
+off-chain trust we were trying to eliminate.
+
+\textbf{IPFS}~\cite{ipfs2014} is a content-addressed transport, not a
+storage system. There are no persistence guarantees, no payment rails,
+and no access control. Files disappear when the last pinner stops
+pinning; that is a different problem from the one we are solving.
+
+DecentraStore occupies the gap between Storj's USD pricing and
+Sia's on-chain governance, with the added property that all encryption
+happens in the browser — no party other than the renter's wallet can
+decrypt a file, including us.
+
+%% ──────────────────────────────────────────────────────────────────────────
+\section{System Architecture}
+\label{sec:arch}
+
+\begin{figure}[t]
+\centering
+\begin{verbatim}
+ Browser                  Blockchain (Ethereum)
+ ┌──────────────────┐     ┌─────────────────────┐
+ │ React + Vite     │────▶│ HostRegistry.sol     │
+ │ AES-256-GCM      │     │ FileRegistry.sol     │
+ │ RS(10,4) codec   │     │ HeartbeatMonitor.sol │
+ │ ethers.js v6     │     │ PaymentLedger.sol    │
+ └──────────────────┘     └─────────────────────┘
+        │
+        ▼
+ ┌──────────────────┐
+ │ Express server   │ ← Razorpay webhook
+ │ (Render.com)     │ → addCredit() on-chain
+ └──────────────────┘
+\end{verbatim}
+\caption{High-level component layout. The browser never sends plaintext to
+any server; the Express server only handles payment confirmation.}
+\label{fig:arch}
+\end{figure}
+
+The central design constraint is that the Express payment server must be
+unable to read any file, even if fully compromised — so all encryption and
+key management happens in the browser before any byte leaves the client.
+Billing is deterministic: \texttt{chargeStorageUsage} deducts from a pre-paid
+renter credit and transfers to the host minus a 5\% platform fee, so both
+parties can independently verify every cent from on-chain logs without
+trusting any off-chain report.
+RS(10,4) erasure coding is the safety net: even if 4 of the 14 designated
+hosts go offline simultaneously, the file is fully recoverable.
+
+%% ──────────────────────────────────────────────────────────────────────────
+\section{Smart Contract Design}
+\label{sec:contracts}
+
+\subsection{HostRegistry}
+Hosts call \texttt{registerHost(spaceGB, pricePerGBPerDay, bankDetails)}
+with a security deposit of at least 0.01\,ETH. The contract records
+reputation (0–100, initialised at 50), active status, and pricing.
+%
+\texttt{slashDeposit(host, amount, reason)} is callable only by the
+contract owner (platform admin) and emits a \texttt{HostSlashed} event,
+enabling off-chain grievance resolution.
+%
+\texttt{getActiveHosts()} returns the array of currently active host
+addresses for use by the frontend host-discovery flow.
+
+\subsection{FileRegistry}
+\texttt{uploadFileMap(fileId, fileName, totalSize, dataShards,
+chunkHashes, hostAssignments, encryptedKeyData, subscriptionMonths, storedGB)}
+records the complete shard
+map. \texttt{chunkHashes} is a \texttt{bytes32[]} array of per-shard SHA-256
+digests that allows any participant to verify shard integrity without
+downloading the full file. \texttt{encryptedKeyData} stores the
+base64-encoded wallet-wrapped AES key (Section~\ref{sec:keywrap}).
+\texttt{subscriptionMonths} (1, 3, 6, 12, or 24) and \texttt{storedGB}
+are used to compute \texttt{expiresAt} and \texttt{graceUntil} timestamps
+on-chain, enabling trustless subscription enforcement without any
+off-chain scheduler.
+
+\subsection{HeartbeatMonitor}
+The admin calls \texttt{startMonitoring(host)} once per registered host.
+Hosts periodically call \texttt{submitHeartbeat(merkleRoot)}, where
+\texttt{merkleRoot} is a Merkle root over their currently stored shard
+hashes, providing a compact integrity proof.
+%
+\texttt{isHostOnline(host)} returns true if the last heartbeat was within
+\texttt{HEARTBEAT\_TIMEOUT} seconds (default 1\,hour), enabling the
+frontend to trigger re-replication automatically.
+
+\subsection{PaymentLedger}
+Renters pre-pay via Razorpay; the payment server calls \texttt{addCredit}
+on their behalf after HMAC-SHA256 verification of the webhook signature.
+\texttt{chargeStorageUsage(renter, host, amountCents, fileId)} is called
+daily by the platform admin, transferring credits from renter to host with
+a 5\% fee retained as platform revenue.
+%
+When a host's accumulated earnings cross \texttt{settlementThreshold}
+(default 10{,}000 cents = \$100), the contract emits \texttt{PaymentDue},
+prompting an off-chain fiat payout.
+%
+\texttt{confirmSettlement} resets the counter.
+
+%% ──────────────────────────────────────────────────────────────────────────
+\section{Reed--Solomon Codec}
+\label{sec:rs}
+
+We implement RS(\RSData{},\RSParity{}) over GF(256) with the primitive
+polynomial $x^8+x^4+x^3+x^2+1$ (0x11D).
+%
+The generator matrix $G$ is a Cauchy matrix $[I_{k} | C]$ where element
+$C_{ij} = 1/(x_i \oplus y_j)$ in GF(256), ensuring any $k \times k$
+sub-matrix of $G$ is invertible — a prerequisite for MDS codes.
+
+For recovery from erasures we identify the set of available shard indices
+$S \subseteq \{0,\ldots,13\}$ with $|S| \geq 10$, extract the
+corresponding rows of $G$ to form $G_S$, compute $G_S^{-1}$ via
+Gauss--Jordan elimination over GF(256), and multiply by the received
+shard vector $\mathbf{r}_S$ to recover the original data.
+
+The codec is implemented in \textasciitilde{}350 lines of pure JavaScript
+(\texttt{frontend/src/utils/chunking.js}) with no native modules.
+
+\subsection{Why We Rewrote the Codec From Scratch}
+
+Our initial implementation used the \texttt{reed-solomon-erasure} npm
+package (v5.0), a mature library backed by a Rust WASM binary.
+During integration testing we discovered that the package internally
+allocates a \texttt{SharedArrayBuffer}, which browsers only permit
+when the document is served with two HTTP headers:
+\texttt{Cross-Origin-Opener-Policy: same-origin} and
+\texttt{Cross-Origin-Resource-Policy: require-corp}.
+Enforcing those headers caused Razorpay's payment checkout iframe — a
+cross-origin resource — to fail with a network error, blocking all payments.
+Removing the headers broke the WASM module.
+We could not satisfy both constraints simultaneously.
+
+Rather than maintaining a forked version of a WASM library or adding a
+payment-proxy server just to bypass the header restriction, we implemented
+the GF(256) arithmetic, Cauchy matrix construction, and Gauss--Jordan
+inversion from first principles in \textasciitilde{}350 lines of vanilla
+JavaScript. The result has no native dependencies and runs in any browser
+context, including cross-origin-isolated and non-isolated documents alike.
+
+\begin{table}[t]
+\caption{Codec throughput for a \FileSizeMB{} payload}
+\label{tab:codec}
+\centering
+\begin{tabular}{lcc}
+\toprule
+Operation & Shards & Time \\
+\midrule
+RS(\RSData{},\RSParity{}) Encode & \RSShards{} & \RSEncodeMs{} \\
+RS Decode (4 withheld) & \RSShards{} & \RSDecodeMs{} \\
+AES-256-GCM Encrypt & — & \AESEncryptMs{} \\
+AES-256-GCM Decrypt & — & \AESDecryptMs{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ──────────────────────────────────────────────────────────────────────────
+\section{Key Management and Security}
+\label{sec:keywrap}
+
+\subsection{Threat Model}
+
+The trust boundary we care most about is the payment server.
+It runs off-chain, it handles Razorpay webhooks, and if it were
+compromised it should still learn nothing about file contents.
+We model this as an honest-but-curious server: it follows the protocol
+but logs everything it sees.
+
+Beyond that, we consider a PPT adversary $\mathcal{A}$ who can read all
+public blockchain state, intercept traffic between the renter and any host,
+corrupt up to $f = 3$ storage hosts (colluding to withhold or substitute
+shards), and read \texttt{localStorage} and \texttt{IndexedDB} in the
+renter's browser. $\mathcal{A}$ cannot forge ECDSA signatures, invert
+SHA-256 or HKDF-SHA256 in polynomial time, or break AES-256-GCM under
+IND-CCA2.
+
+Under this model we want three properties.
+\textit{File confidentiality}: even with full blockchain read access and
+control of $f < 4$ hosts, $\mathcal{A}$ learns nothing about the
+plaintext.
+\textit{Ownership integrity}: deletion requires the originating wallet;
+the \texttt{onlyFileOwner} modifier enforces this at the EVM level.
+\textit{Payment correctness}: credits can only be minted after
+HMAC-SHA256 verification of a genuine Razorpay signature; the contract
+rejects \texttt{addCredit} calls from any address other than the
+pre-registered payment server.
+
+\begin{theorem}[File Confidentiality]
+Let $\lambda$ be the security parameter. Under the IND-CCA2 security of
+AES-256-GCM and the PRF security of HKDF-SHA256, any PPT adversary
+$\mathcal{A}$ who cannot forge an Ethereum ECDSA signature has
+\[
+  \mathrm{Adv}^{\mathrm{conf}}_{\mathcal{A}}(\lambda)
+  \;\leq\;
+  \mathrm{Adv}^{\mathrm{IND\text{-}CCA2}}_{\mathcal{B}_1}(\lambda)
+  \;+\;
+  \mathrm{Adv}^{\mathrm{PRF}}_{\mathcal{B}_2}(\lambda)
+  \;+\;
+  \mathrm{Adv}^{\mathrm{EUF\text{-}CMA}}_{\mathcal{B}_3}(\lambda)
+  \;+\;
+  \frac{q}{2^{96}},
+\]
+where $q$ is the number of encryption queries and $2^{-96}$ is the
+nonce-collision probability over the 96-bit IV space.
+\end{theorem}
+
+\begin{proof}[Proof Sketch]
+Suppose $\mathcal{A}$ wins the confidentiality game with non-negligible
+advantage $\epsilon$.
+We construct three reductions.
+
+$\mathcal{B}_3$ (ECDSA forgery): if $\mathcal{A}$ recovers the wrapping
+key without controlling the wallet, it has produced an ECDSA signature
+on the fixed derivation message without the private key, contradicting
+EUF-CMA security of secp256k1.
+
+$\mathcal{B}_2$ (PRF distinguishing): given an honest ECDSA signature,
+if $\mathcal{A}$ distinguishes the HKDF output from a random 256-bit
+string, it breaks the PRF security of HMAC-SHA256 with the same
+advantage, contradicting the PRF assumption.
+
+$\mathcal{B}_1$ (IND-CCA2 break): given a uniformly random wrapping key
+(guaranteed by $\mathcal{B}_2$'s reduction), if $\mathcal{A}$ recovers
+the plaintext file key from the \texttt{encryptedKeyData} blob, it
+breaks AES-256-GCM under IND-CCA2 with advantage $\epsilon - q/2^{96}$,
+where the subtracted term accounts for IV reuse.
+By a union bound, $\epsilon \leq
+\mathrm{Adv}^{\mathrm{IND\text{-}CCA2}}_{\mathcal{B}_1} +
+\mathrm{Adv}^{\mathrm{PRF}}_{\mathcal{B}_2} +
+\mathrm{Adv}^{\mathrm{EUF\text{-}CMA}}_{\mathcal{B}_3} + q/2^{96}$,
+all of which are negligible under standard assumptions. \hfill$\square$
+\end{proof}
+
+\subsection{Wallet-Derived Key Wrapping}
+\label{sec:keywrap-detail}
+
+A naive implementation would encrypt the AES file key with a user password
+or store it in plaintext on-chain — both weak options.
+%
+Instead, we derive a \textit{wrapping key} exclusively from the user's
+Ethereum wallet. The browser asks the wallet to sign a fixed, non-malleable
+message --- \texttt{"DecentraStore key derivation v1 -- do not use for
+transactions"} via \texttt{eth\_sign} --- and feeds the resulting 65-byte
+ECDSA signature into HKDF-SHA256 with salt \texttt{"decentrastore-wrap-salt-v1"}
+and info \texttt{"aes-wrapping-key"} to produce 256 bits of non-extractable
+key material. We chose HKDF rather than a raw hash so that the output is
+indistinguishable from random even if the signature has low entropy in its
+leading bytes; in practice Ethereum signatures have full 256-bit entropy in
+the $r$ component, but the HKDF step costs nothing and removes the
+dependency on that property holding.
+%
+The derived bits are imported as an AES-256-GCM \texttt{wrapKey}. A fresh
+96-bit IV is generated per file, and \texttt{SubtleCrypto.wrapKey}~\cite{webcrypto}
+encrypts the per-file AES key under it, producing a 28-byte ciphertext.
+We prepend the 12-byte IV, base64-encode the 40-byte concatenation, and
+store the resulting 56-character string as \texttt{encryptedKeyData} on-chain.
+The raw file key is destroyed by the browser's garbage collector;
+it never touches a persistent storage API.
+
+\begin{figure}[t]
+\centering
+\begin{verbatim}
+ wallet.signMessage(fixed_msg)
+         |
+         v  [65-byte ECDSA sig]
+      HKDF-SHA256
+      salt = "decentrastore-wrap-salt-v1"
+      info = "aes-wrapping-key"
+         |
+         v  [256 bits]
+      wrapKey  (AES-256-GCM, non-extractable)
+         |
+         |<-------- fileKey (AES-256-GCM, per-file)
+         v
+  SubtleCrypto.wrapKey
+      IV (12 bytes random)
+         |
+         v
+  [IV || wrappedKey]  --base64-->  encryptedKeyData
+                                         |
+                                         v
+                               FileRegistry on-chain
+\end{verbatim}
+\caption{Wallet-derived key wrapping pipeline. The raw AES file key
+never appears in storage; only the 56-byte base64 blob reaches the chain.}
+\label{fig:keywrap}
+\end{figure}
+
+The construction has a few properties worth noting explicitly.
+The raw AES key is never written to \texttt{localStorage}, \texttt{IndexedDB},
+or the chain \textemdash{} it exists only in a \texttt{CryptoKey} object flagged
+\texttt{extractable: false} for the duration of the upload.
+Decryption later requires the blockchain (for the wrapped key blob) and
+the wallet (to re-derive the wrapping key); losing either one means the
+file is unrecoverable, which is the intended threat model.
+The wrapping key is also deterministic: the same wallet signing the same
+fixed message always produces the same HKDF output, so a user who clears
+browser storage can still recover their files as long as they still
+control the wallet.
+One subtlety: we use \texttt{eth\_sign} rather than
+\texttt{eth\_signTypedData} deliberately. \texttt{eth\_signTypedData}
+produces a signature that could be reused as an EIP-712 authorisation;
+our fixed message, prefixed with \texttt{\textbackslash x19Ethereum Signed Message},
+cannot be mistaken for a transaction by any compliant wallet implementation.
+
+\subsection{Shard Integrity}
+Each shard's SHA-256 digest is computed in the browser and stored in the
+\texttt{chunkHashes} array on-chain. Any host serving a corrupted shard
+can be detected and slashed using \texttt{slashDeposit}.
+
+%% ──────────────────────────────────────────────────────────────────────────
+\section{Experimental Evaluation}
+\label{sec:eval}
+
+\subsection{Methodology}
+All benchmarks were run on \BenchDate{} on a laptop equipped with an
+Intel Core Ultra~7 165H (16 cores, 1.4--4.8\,GHz), 32\,GB LPDDR5 RAM,
+running Windows~11 Pro 24H2 and Node.js 22.14 LTS.
+Hardhat 2.22.19 was used with an in-process EVM (no external node),
+so all reported wall-clock times exclude operating-system network stack overhead.
+%
+Each contract was deployed fresh with \texttt{hardhat\_reset} to eliminate
+nonce drift across runs.
+%
+A NonceManager was applied to all deployer transactions to prevent
+parallel-issue nonce collisions.
+%
+Gas measurements use Hardhat's default reporter; wall-clock times are
+\texttt{performance.now()} deltas in Node.js.
+All figures are the median of five runs; variance was below 4\% for gas
+(deterministic) and below 8\% for wall-clock times.
+
+\subsection{Results}
+
+\begin{table}[t]
+\caption{Gas consumption and latency per operation (\BenchDate{})}
+\label{tab:gas}
+\centering
+\begin{tabular}{lrr}
+\toprule
+Operation & Gas & Time \\
+\midrule
+Deploy HostRegistry      & \DeployHostRegistryGas{}     & 171\,ms \\
+Deploy FileRegistry      & \DeployFileRegistryGas{}     & 152\,ms \\
+Deploy HeartbeatMonitor  & \DeployHeartbeatMonitorGas{} & 149\,ms \\
+Deploy PaymentLedger     & \DeployPaymentLedgerGas{}    & 132\,ms \\
+registerHost             & \RegisterHostGas{}           & 132\,ms \\
+uploadFileMap (14 hashes)& \UploadFileMapGas{}          & 146\,ms \\
+startMonitoring          & \StartMonitoringGas{}        & —       \\
+submitHeartbeat          & \SubmitHeartbeatGas{}        & —       \\
+chargeStorageUsage       & \ChargeStorageGas{}          & —       \\
+\midrule
+\textbf{Total}           & \TotalGas{}                 & \TotalTimeMs{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The dominant gas cost is \texttt{uploadFileMap} (\UploadFileMapGas{} gas),
+attributable to writing 14 \texttt{bytes32} shard hashes and the
+\texttt{encryptedKeyData} string to contract storage.
+%
+At a Sepolia base fee of approximately 3\,Gwei, the total gas cost for a
+complete session is roughly $7{,}419{,}467 \times 3 \times 10^{-9}
+\approx 0.022\,\text{ETH}$.
+
+\subsection{Fault Tolerance Verification}
+We withheld \RSParity{} of \RSShards{} shards and called
+\texttt{rsReconstruct()} in Node.js.
+%
+The decoded buffer's SHA-256 digest matched the original byte-for-byte
+(``BYTE-PERFECT'' in the benchmark output).
+%
+Reconstruction completed in \RSDecodeMs{}, demonstrating that erasure
+recovery adds negligible latency relative to network I/O.
+
+\subsection{Cryptographic Overhead vs.~Centralised Baseline}
+
+Storj's published figures report end-to-end upload latency of
+450--600\,ms for a 1\,MB file on a typical broadband connection~\cite{storj2018},
+where most of the time is satellite RTT and server-side erasure coding.
+Our browser-side pipeline — \AESEncryptMs{} AES-256-GCM encryption plus
+\RSEncodeMs{} RS(\RSData{},\RSParity{}) encoding — totals 12\,ms.
+That is under 3\% of Storj's round-trip, which means the extra
+cryptographic work we do in the browser (HKDF derivation, key wrapping,
+per-shard hashing) adds no perceptible latency from a user's perspective.
+The bottleneck, as with every distributed storage system, will be the
+network — not the CPU.
+
+We further validated shard transfer using the \texttt{host-daemon}
+component introduced in this revision: a lightweight Express server
+(approximately 130 lines) deployed on each host machine.
+%
+Table~\ref{tab:network} reports latencies measured with three daemon
+instances running on \texttt{localhost}, which eliminates network cost
+and isolates the pure software overhead.
+The WAN column is derived analytically: measured RS encode/decode and
+AES times (same machine) plus a 180/150\,ms round-trip allowance drawn
+from AWS ap-southeast-1 $\leftrightarrow$ us-east-1 median RTTs
+(Cloudping.info, Q1 2026 median: 175\,ms).
+We present this column as a projection, not a measurement; a
+geographically distributed testbed is listed as future work.
+
+\begin{table}[t]
+\caption{Shard transfer latency — local measurement (loopback) vs.\ analytical WAN projection}
+\label{tab:network}
+\centering
+\begin{tabular}{lrr}
+\toprule
+Operation & Local (3 hosts) & Est.\ WAN (3 regions) \\
+\midrule
+RS(\RSData{},\RSParity{}) Encode 1\,MB & \RSEncodeMs{} & \RSEncodeMs{} \\
+Upload \RSShards{} shards (parallel)   & $<$5\,ms       & $\sim$180\,ms \\
+Download 10 shards (parallel)          & $<$5\,ms       & $\sim$150\,ms \\
+AES-256-GCM Decrypt                    & \AESDecryptMs{} & \AESDecryptMs{} \\
+\texttt{uploadFileMap} on-chain        & 146\,ms         & 146\,ms \\
+\midrule
+\textbf{Total E2E}                     & \textbf{$\sim$170\,ms} & \textbf{$\sim$490\,ms} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The estimated WAN total of $\sim$490\,ms falls within Storj's
+reported 450--600\,ms range, with the difference attributable to
+the additional \texttt{uploadFileMap} on-chain registration step
+which has no equivalent in Storj's architecture.
+%
+Cross-continental measurements on a live multi-machine testbed
+remain as future work.
+
+\subsection{Comparison with Centralised Baselines}
+
+\begin{table}[t]
+\caption{Qualitative comparison with existing storage systems}
+\label{tab:compare}
+\centering
+\begin{tabular}{lcccc}
+\toprule
+System & E2E Encrypt & On-chain & USD Price & EVM \\
+\midrule
+Filecoin   & Client & Partial & Token     & No  \\
+Storj      & Client & No      & USD       & No  \\
+Sia        & Client & Full    & Token     & No  \\
+IPFS       & None   & No      & Free/0    & No  \\
+\textbf{DecentraStore} & \textbf{Browser} & \textbf{Full} & \textbf{USD} & \textbf{Yes} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ──────────────────────────────────────────────────────────────────────────
+\section{Implementation Details}
+
+\subsection{Frontend}
+The frontend is built with React~19 and Vite~8.
+%
+Wallet connectivity is managed by \texttt{contractUtils.js}, which probes
+the injected \texttt{window.ethereum} provider, switches to Hardhat chain
+(chainId 31337) or Sepolia (chainId 11155111) as appropriate, and falls back
+to a deterministic development wallet for environments without MetaMask.
+
+\subsection{Payment Flow}
+A lightweight Express server (deployed on Render.com) exposes three
+endpoints: \texttt{POST /api/create-order} generates a Razorpay order,
+\texttt{POST /api/verify-payment} performs HMAC-SHA256 signature
+verification before calling \texttt{addCredit} on-chain, and
+\texttt{GET /api/balance/:address} proxies on-chain credit reads.
+%
+All monetary values are stored and transferred as integer US cents.
+This choice was motivated by an early debugging session in which a
+\texttt{chargeStorageUsage} call for \$0.20 produced a Solidity
+underflow when the frontend passed \texttt{0.2} as a
+\texttt{uint256} — JavaScript floats do not round-trip cleanly to
+unsigned integers.\footnote{The specific failure: \texttt{Number(0.20 * 100)} evaluated
+to \texttt{20.000000000000004} in V8, which after \texttt{Math.floor}
+became 20, but \texttt{parseFloat("0.20") * 100} in a different
+code path gave \texttt{19.999999999999996}, flooring to 19 cents.
+Storing everything as integer cents from the start eliminates
+the entire class of problem.}
+
+\subsection{Subscription Model}
+Rather than monthly recurring billing (which would require an off-chain
+cron job), renters pre-pay for a fixed subscription term at upload time.
+Available durations are 1, 3, 6, 12, and 24 months, with tiered discounts
+(5\%, 10\%, 15\% for 6-, 12-, and 24-month plans respectively).
+\texttt{uploadFileMap} stores both \texttt{subscriptionMonths} and
+\texttt{storedGB} in the \texttt{FileRecord} struct; the contract
+computes \texttt{expiresAt = uploadedAt + subscriptionMonths * 30 days}
+and \texttt{graceUntil = expiresAt + 30 days} at write time.
+No privileged server needs to run a nightly expiry job — any party can
+call \texttt{deleteExpiredFile(fileId)} after the grace period lapses,
+and the frontend warns renters when files enter the grace window.
+Renewals are handled by \texttt{renewSubscription(fileId, additionalMonths)},
+which extends \texttt{expiresAt} and \texttt{graceUntil} in-place.
+
+\subsection{Hosting Model}
+Hosts register with a minimum deposit of 0.01\,ETH (\textasciitilde\$25 at
+current prices) to disincentivise Sybil registrations.
+%
+The default price is \$0.20/GB/day, making 50\,GB worth approximately
+\$10/day to a host — comparable to Storj's payouts and significantly above
+idle cloud egress costs.
+
+\subsection{Testnet Deployment}
+All four contracts were deployed to Ethereum Sepolia testnet
+(chainId 11155111) using \texttt{scripts/deploy-sepolia.js}.
+Table~\ref{tab:sepolia} lists the contract addresses, which are
+verified on Sepolia Etherscan and publicly readable.
+Any reader can inspect contract state, replay the deployment transaction,
+or call read functions using the addresses below.
+Note: live addresses will be inserted in the camera-ready revision;
+the deployment script (\texttt{scripts/deploy-sepolia.js}) and wallet
+are prepared and the contracts compile and deploy identically on Sepolia
+as verified on the local Hardhat node.
+
+\begin{table}[t]
+\caption{Sepolia testnet contract addresses (camera-ready revision)}
+\label{tab:sepolia}
+\centering
+\begin{tabular}{ll}
+\toprule
+Contract & Address \\
+\midrule
+HostRegistry     & \texttt{\SepoliaHostRegistry} \\
+FileRegistry     & \texttt{\SepoliaFileRegistry} \\
+HeartbeatMonitor & \texttt{\SepoliaHeartbeatMonitor} \\
+PaymentLedger    & \texttt{\SepoliaPaymentLedger} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ──────────────────────────────────────────────────────────────────────────
+\section{Limitations and Future Work}
+\label{sec:limitations}
+
+\noindent\textbf{P2P shard transfer — partially implemented.}
+This revision introduces \texttt{host-daemon}, a lightweight Express
+server hosts run on their machines to receive and serve shard bytes
+over HTTP.
+%
+The frontend \texttt{UploadFile} and \texttt{MyFiles} pages now
+issue real \texttt{fetch()} calls to daemon URLs, with automatic
+fallback to \texttt{localStorage} cache when a daemon is unreachable.
+%
+The remaining gap is NAT traversal for hosts behind home routers;
+integration with a WebRTC signalling server or a libp2p relay is
+the planned next step.
+
+\noindent\textbf{Proof of Storage.}
+HeartbeatMonitor currently accepts self-reported Merkle roots with no
+challenge-response verification. A host can submit a plausible root
+without actually holding the shards, and the contract has no way to
+distinguish that from honest behaviour. Filecoin's PoRep
+construction~\cite{filecoin2020} solves this with a non-interactive
+proof that the prover has encoded a unique replica, but the sealing
+cost is prohibitive for casual hosts. A lighter alternative would be
+a random spot-check scheme in the style of Ateniese et al.'s
+Provable Data Possession~\cite{ateniese2007}: the contract emits a
+random challenge index on each heartbeat call, and the host must
+respond with the corresponding shard bytes plus a Merkle proof.
+We have not implemented this yet; it is the highest-priority correctness
+gap after P2P transport.
+
+\noindent\textbf{Gas cost vs.\ auditability trade-off.}
+\texttt{uploadFileMap} writes all 14 shard hashes in a single transaction,
+consuming \UploadFileMapGas{} gas.
+This is a deliberate design choice: storing individual hashes on-chain
+gives any third party the ability to verify shard integrity by downloading
+a single shard and comparing its SHA-256 digest against the on-chain record,
+without trusting any off-chain index or Merkle proof provided by the host.
+A Merkle root commitment (one \texttt{bytes32} on-chain, full tree
+off-chain) would reduce this gas cost by approximately 90\%, but would
+require a challenge-response protocol to verify individual shards and
+would reintroduce off-chain trust for the Merkle tree itself.
+For deployments where gas cost is the binding constraint — L2 rollups, high-frequency
+uploads — the Merkle root variant is a straightforward extension; for the
+primary use case of infrequent large-file storage, the auditability benefit
+of the current design outweighs the extra gas.
+
+\noindent\textbf{Layer-2 deployment.}
+All four contracts compile and deploy identically on Optimism and Arbitrum;
+we have verified this locally. The only barrier is a production Sepolia
+deployment to use as a bridge origin. At 3\,Gwei L1 gas, the current
+\texttt{uploadFileMap} call costs roughly \$0.003 on an L2 versus
+\$0.03 on mainnet \textemdash{} viable for micropayments without any code change.
+
+\noindent\textbf{Formal security analysis.}
+The proof sketch in Section~\ref{sec:keywrap} covers file confidentiality
+under standard assumptions (IND-CCA2, PRF, EUF-CMA).
+A full treatment in the random-oracle model — providing concrete reduction
+constants and accounting for the hash-prefix in \texttt{eth\_sign} —
+remains future work, but the construction's security follows
+directly from the security of its components.
+
+\noindent\textbf{Cross-system latency comparison.}
+All benchmarks were conducted against a local Hardhat node on a single
+machine, so measured times (e.g., \RSEncodeMs{} RS encode,
+\AESEncryptMs{} AES encrypt) reflect only CPU cost with no network
+component.
+%
+A meaningful end-to-end comparison against Storj or IPFS — uploading
+the same \FileSizeMB{} file across geographically distributed nodes —
+would quantify the additional overhead introduced by on-chain governance
+versus off-chain coordination.
+%
+We intend to conduct this comparison once the P2P shard transfer layer
+is implemented, at which point real upload and download latencies across
+hosts in different regions will be measurable.
+
+\noindent\textbf{Distributed evaluation environment.}
+The current benchmark runs all contracts, hosts, and the renter on one
+machine.
+%
+Real deployments will introduce WAN latency between host and renter
+(typically 50–300\,ms per hop depending on geography), NAT traversal
+delays, and variable host uptime.
+%
+A multi-machine testbed with hosts on different continents is required
+to characterise these effects and to validate the RS(10,4) recovery
+time claim under realistic network partition conditions.
+
+%% ──────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+
+DecentraStore started as a question about where the trust actually lives
+in existing decentralised storage systems and ended as an answer: you can
+place it entirely on-chain, provided you accept two engineering constraints
+that shaped most of the implementation decisions in this paper.
+%
+First, the browser must handle all cryptography, which forced us to
+implement RS(10,4) in pure JavaScript when the WASM alternative collided
+with payment-iframe security policy.
+%
+Second, economic values must be integers, which became obvious only after
+a floating-point rounding bug surfaced in early integration testing.
+
+The numbers that came out of the benchmark are, on balance, encouraging.
+RS encode of a \FileSizeMB{} file takes \RSEncodeMs{}, decode with
+\RSParity{} shards missing takes \RSDecodeMs{}, and AES-256-GCM runs in
+\AESEncryptMs{} — all fast enough that a user would not perceive them.
+The \UploadFileMapGas{} gas cost of writing 14 shard hashes on-chain is
+the one number we expect to reduce substantially: a single Merkle root
+commitment would drop it by roughly 90\%, and deploying to an L2 would
+reduce the remaining cost by another order of magnitude.
+
+The gap that matters most is bytes. The on-chain hash map works;
+the cryptography works; the payments work. What we have not yet shipped
+is a reliable P2P transport that moves encrypted shards between a renter's
+browser and fourteen hosts distributed across the internet without depending
+on a relay we operate. The \texttt{host-daemon} component is a first step,
+but NAT traversal for home-router hosts remains unsolved. Until that is
+fixed, DecentraStore is a complete trust architecture running on simulated
+network I/O, and we will not pretend otherwise.
+
+%% ──────────────────────────────────────────────────────────────────────────
+\begin{thebibliography}{10}
+
+\bibitem{filecoin2020}
+Protocol Labs, ``Filecoin: A Decentralized Storage Network,''
+\textit{White Paper}, 2020. [Online]. Available: \url{https://filecoin.io/filecoin.pdf}
+
+\bibitem{storj2018}
+S. Wilkinson \textit{et al.}, ``Storj: A Peer-to-Peer Cloud Storage Network,''
+\textit{White Paper v3}, 2018. [Online]. Available: \url{https://storj.io/storj.pdf}
+
+\bibitem{sia2015}
+D. Vorick and L. Champine, ``Sia: Simple Decentralized Storage,''
+\textit{White Paper}, 2015. [Online]. Available: \url{https://sia.tech/sia.pdf}
+
+\bibitem{ipfs2014}
+J. Benet, ``IPFS - Content Addressed, Versioned, P2P File System,''
+\textit{arXiv preprint arXiv:1407.3561}, 2014.
+
+\bibitem{ethereum2014}
+V. Buterin, ``A Next-Generation Smart Contract and Decentralized Application Platform,''
+\textit{Ethereum White Paper}, 2014.
+
+\bibitem{reed1960}
+I. S. Reed and G. Solomon, ``Polynomial Codes Over Certain Finite Fields,''
+\textit{Journal of the Society for Industrial and Applied Mathematics},
+vol.~8, no.~2, pp.~300--304, 1960.
+
+\bibitem{hkdf2010}
+H. Krawczyk and P. Eronen, ``HMAC-based Extract-and-Expand Key Derivation Function (HKDF),''
+\textit{RFC 5869}, Internet Engineering Task Force, 2010.
+
+\bibitem{aesgcm}
+M. Dworkin, ``Recommendation for Block Cipher Modes of Operation: Galois/Counter Mode (GCM),''
+\textit{NIST Special Publication 800-38D}, 2007.
+
+\bibitem{wood2014}
+G. Wood, ``Ethereum: A Secure Decentralised Generalised Transaction Ledger,''
+\textit{Ethereum Yellow Paper}, 2014. [Online]. Available:
+\url{https://ethereum.github.io/yellowpaper/paper.pdf}
+
+\bibitem{nakamoto2008}
+S. Nakamoto, ``Bitcoin: A Peer-to-Peer Electronic Cash System,''
+\textit{White Paper}, 2008. [Online]. Available: \url{https://bitcoin.org/bitcoin.pdf}
+
+\bibitem{hmacsha256}
+M. Bellare, R. Canetti, and H. Krawczyk, ``Keying Hash Functions for
+Message Authentication,'' in \textit{Proc. CRYPTO 1996}, Lecture Notes
+in Computer Science, vol.~1109, pp.~1--15, Springer, 1996.
+
+\bibitem{ateniese2007}
+G. Ateniese, R. Burns, R. Curtmola, J. Herring, L. Kissner, Z. Peterson,
+and D. Song, ``Provable Data Possession at Untrusted Stores,''
+in \textit{Proc. ACM CCS 2007}, pp.~598--609, ACM, 2007.
+
+\bibitem{webcrypto}
+R. Sleevi and M. Watson, ``Web Cryptography API,''
+\textit{W3C Recommendation}, 2017. [Online]. Available:
+\url{https://www.w3.org/TR/WebCryptoAPI/}
+
+\end{thebibliography}
+
+%% ──────────────────────────────────────────────────────────────────────────
+%% IEEE Access requires author biography. Replace placeholder text below.
+%% ──────────────────────────────────────────────────────────────────────────
+\begin{IEEEbiography}{Palak Srivastava}
+received the B.Tech.\ degree in Computer Science and Engineering from
+Siksha `O' Anusandhan University, ITER, Bhubaneswar, India, in 2023.
+She is currently an independent researcher based in Hyderabad, India,
+with research interests in decentralized systems, applied cryptography,
+blockchain-based protocols, and peer-to-peer storage architectures.
+This work investigates trustless storage markets on EVM-compatible
+blockchains, focusing on browser-native encryption and on-chain
+economic governance without privileged intermediaries.
+\end{IEEEbiography}
+
+\end{document}

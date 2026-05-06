@@ -24,6 +24,12 @@ contract FileRegistry {
         uint256   uploadedAt;        // Block timestamp of upload
         bool      isDeleted;         // Soft delete flag (true = file has been removed)
         bytes     encryptedKeyData;  // Master encryption key, asymmetrically encrypted with owner's key
+        // ── Subscription fields ──────────────────────────────────────────────
+        uint256   subscriptionMonths; // Number of months paid upfront (1/3/6/12/24)
+        uint256   storedGB;           // Declared storage size in whole GB (ceil of sizeBytes/1e9)
+        uint256   expiresAt;          // Unix timestamp: uploadedAt + subscriptionMonths * 30 days
+        uint256   graceUntil;         // Unix timestamp: expiresAt + 30 days (1-month grace window)
+        uint256   lastRenewalAt;      // Unix timestamp of most recent renewal (0 if never renewed)
     }
 
     // ─────────────────────────────────────────────
@@ -35,6 +41,7 @@ contract FileRegistry {
 
     mapping(bytes32 => FileRecord) public fileRecords; // fileId → FileRecord
     mapping(address => bytes32[]) public userFiles;    // user wallet → list of their fileIds
+    bytes32[] public allFileIds;                       // global list of every fileId (for admin)
 
     // ─────────────────────────────────────────────
     //  EVENTS
@@ -49,6 +56,8 @@ contract FileRegistry {
     );
     event FileDeleted(bytes32 indexed fileId, address indexed owner);
     event ChunkReassigned(bytes32 indexed fileId, uint8 chunkIndex, address newHost);
+    event SubscriptionRenewed(bytes32 indexed fileId, address indexed owner, uint256 additionalMonths, uint256 newExpiresAt);
+    event FileExpiredDeleted(bytes32 indexed fileId, address indexed owner, uint256 deletedAt);
 
     // ─────────────────────────────────────────────
     //  MODIFIERS
@@ -94,6 +103,8 @@ contract FileRegistry {
     /// @param _chunkHashes Array of SHA-256 hashes for each chunk (for integrity verification)
     /// @param _hostAssignments Array of host wallet addresses — index matches chunk number
     /// @param _encryptedKeyData The master AES key, encrypted with the owner's public key
+    /// @param _subscriptionMonths Number of months paid (1, 3, 6, 12, or 24)
+    /// @param _storedGB Declared storage in whole GB (ceil of sizeBytes / 1e9)
     function uploadFileMap(
         bytes32          _fileId,
         string    memory _fileName,
@@ -101,29 +112,42 @@ contract FileRegistry {
         uint8            _dataChunks,
         bytes32[] memory _chunkHashes,
         address[] memory _hostAssignments,
-        bytes     memory _encryptedKeyData
+        bytes     memory _encryptedKeyData,
+        uint256          _subscriptionMonths,
+        uint256          _storedGB
     ) external {
         require(fileRecords[_fileId].owner == address(0), "File ID already exists");
         require(_chunkHashes.length == _hostAssignments.length, "Chunk hashes and host assignments must match");
         require(_chunkHashes.length > 0, "Must have at least one chunk");
         require(_sizeBytes > 0, "File size must be greater than 0");
         require(_dataChunks > 0 && _dataChunks <= _chunkHashes.length, "Invalid data chunk count");
+        require(_subscriptionMonths > 0, "Subscription months must be at least 1");
+        require(_storedGB > 0, "Stored GB must be at least 1");
+
+        uint256 _expiresAt  = block.timestamp + _subscriptionMonths * 30 days;
+        uint256 _graceUntil = _expiresAt + 30 days;
 
         fileRecords[_fileId] = FileRecord({
-            fileId:           _fileId,
-            owner:            msg.sender,
-            sizeBytes:        _sizeBytes,
-            totalChunks:      uint8(_chunkHashes.length),
-            dataChunks:       _dataChunks,
-            chunkHashes:      _chunkHashes,
-            hostAssignments:  _hostAssignments,
-            fileName:         _fileName,
-            uploadedAt:       block.timestamp,
-            isDeleted:        false,
-            encryptedKeyData: _encryptedKeyData
+            fileId:              _fileId,
+            owner:               msg.sender,
+            sizeBytes:           _sizeBytes,
+            totalChunks:         uint8(_chunkHashes.length),
+            dataChunks:          _dataChunks,
+            chunkHashes:         _chunkHashes,
+            hostAssignments:     _hostAssignments,
+            fileName:            _fileName,
+            uploadedAt:          block.timestamp,
+            isDeleted:           false,
+            encryptedKeyData:    _encryptedKeyData,
+            subscriptionMonths:  _subscriptionMonths,
+            storedGB:            _storedGB,
+            expiresAt:           _expiresAt,
+            graceUntil:          _graceUntil,
+            lastRenewalAt:       0
         });
 
         userFiles[msg.sender].push(_fileId);
+        allFileIds.push(_fileId);
         totalFiles++;
 
         emit FileUploaded(_fileId, msg.sender, _fileName, _sizeBytes, _chunkHashes.length);
@@ -208,5 +232,60 @@ contract FileRegistry {
         returns (bool)
     {
         return fileRecords[_fileId].owner == _claimant && !fileRecords[_fileId].isDeleted;
+    }
+
+    // ─────────────────────────────────────────────
+    //  SUBSCRIPTION FUNCTIONS
+    // ─────────────────────────────────────────────
+
+    /// @notice Returns true if the subscription period has expired (past expiresAt)
+    function isExpired(bytes32 _fileId) public view returns (bool) {
+        FileRecord storage f = fileRecords[_fileId];
+        return !f.isDeleted && f.expiresAt > 0 && block.timestamp > f.expiresAt;
+    }
+
+    /// @notice Returns true if the file is inside the grace window (expired but not yet deleted)
+    function isInGrace(bytes32 _fileId) public view returns (bool) {
+        FileRecord storage f = fileRecords[_fileId];
+        return isExpired(_fileId) && block.timestamp <= f.graceUntil;
+    }
+
+    /// @notice Extend the subscription for a file by additional months
+    /// @dev Caller must be the file owner. Payment must have been confirmed off-chain first.
+    /// @param _fileId         File to renew
+    /// @param _additionalMonths Number of extra months being added
+    function renewSubscription(bytes32 _fileId, uint256 _additionalMonths)
+        external
+        onlyFileOwner(_fileId)
+    {
+        require(_additionalMonths > 0, "Must renew for at least 1 month");
+        FileRecord storage f = fileRecords[_fileId];
+        require(!f.isDeleted, "File has been deleted");
+
+        // If already expired, extend from now; otherwise extend from current expiry
+        uint256 baseTime = block.timestamp > f.expiresAt ? block.timestamp : f.expiresAt;
+        f.expiresAt          = baseTime + _additionalMonths * 30 days;
+        f.graceUntil         = f.expiresAt + 30 days;
+        f.subscriptionMonths += _additionalMonths;
+        f.lastRenewalAt      = block.timestamp;
+
+        emit SubscriptionRenewed(_fileId, msg.sender, _additionalMonths, f.expiresAt);
+    }
+
+    /// @notice Admin deletes a file after its grace period has ended
+    /// @dev Only callable by platform admin and only after graceUntil has passed
+    function deleteExpiredFile(bytes32 _fileId) external onlyOwner {
+        FileRecord storage f = fileRecords[_fileId];
+        require(f.owner != address(0), "File not found");
+        require(!f.isDeleted, "Already deleted");
+        require(block.timestamp > f.graceUntil, "Grace period has not ended yet");
+
+        f.isDeleted = true;
+        emit FileExpiredDeleted(_fileId, f.owner, block.timestamp);
+    }
+
+    /// @notice Get all registered file IDs (for admin dashboard enumeration)
+    function getAllFileIds() external view returns (bytes32[] memory) {
+        return allFileIds;
     }
 }
