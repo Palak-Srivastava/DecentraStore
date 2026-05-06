@@ -4,7 +4,8 @@
 
 [![Solidity](https://img.shields.io/badge/Solidity-0.8.20-blue)](https://soliditylang.org/)
 [![Hardhat](https://img.shields.io/badge/Hardhat-2.22-yellow)](https://hardhat.org/)
-[![React](https://img.shields.io/badge/React-18-61DAFB)](https://react.dev/)
+[![React](https://img.shields.io/badge/React-19-61DAFB)](https://react.dev/)
+[![Vite](https://img.shields.io/badge/Vite-8.0-646CFF)](https://vitejs.dev/)
 [![Tests](https://img.shields.io/badge/Tests-85%20passing-brightgreen)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
@@ -134,17 +135,25 @@ decentrastore/
 │   ├── e2e-benchmark.js        # Full 10-step E2E benchmark
 │   └── update-paper.js         # Patch IEEE paper with real benchmark data
 │
-├── frontend/                   # React + Vite app
+├── frontend/                   # React 19 + Vite 8 app
 │   └── src/
 │       ├── pages/
-│       │   ├── Home.jsx
-│       │   ├── HostDashboard.jsx
-│       │   ├── RenterDashboard.jsx
-│       │   ├── UploadFile.jsx
-│       │   └── MyFiles.jsx
+│       │   ├── Home.jsx            # Animated landing page (3D network canvas)
+│       │   ├── Subscribe.jsx       # Subscription plan selector + Razorpay flow
+│       │   ├── UploadFile.jsx      # Subscription-gated file upload
+│       │   ├── MyFiles.jsx         # Renter file manager with renew/download
+│       │   ├── HostDashboard.jsx   # Host registration + earnings dashboard
+│       │   ├── RenterDashboard.jsx # Renter storage stats
+│       │   └── AdminDashboard.jsx  # Platform admin — payout settings, KPIs
+│       ├── components/
+│       │   ├── CursorFX.jsx        # Custom hex-packet cursor + particle trail
+│       │   ├── PageLoader.jsx      # Matrix rain → decode boot animation
+│       │   ├── GlobalBackground.jsx# Persistent animated particle network
+│       │   └── PageTransition.jsx  # Smooth fade+drift route transition
 │       └── utils/
-│           ├── chunking.js     # RS(10,4) pure-JS GF(256) codec
-│           ├── encryption.js   # AES-256-GCM + wallet key wrapping
+│           ├── chunking.js         # RS(10,4) pure-JS GF(256) codec
+│           ├── encryption.js       # AES-256-GCM + wallet key wrapping
+│           ├── download.js         # Shard fetch → RS decode → decrypt → save
 │           └── contractUtils.js
 │
 ├── server/                     # Express payment backend
@@ -234,7 +243,7 @@ If you use this work in academic research, please cite:
 @article{decentrastore2026,
   title   = {DecentraStore: A Blockchain-Governed Decentralized Storage System
              with Reed-Solomon Fault Tolerance and Multi-Layer Encryption},
-  author  = {Palak Srivastava},
+  author  = {[Author Name]},
   journal = {IEEE Access},
   year    = {2026}
 }
